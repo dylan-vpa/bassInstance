@@ -59,11 +59,17 @@ def webhook():
                                 mensaje = message['text']['body']
                                 historial.setdefault(numero, []).append({'from': 'user', 'text': mensaje})
                                 mensaje_lower = mensaje.lower()
+
+                                # Verificar si ya se hizo llamada
+                                llamada_ya_hecha = any(m.get('from') == 'call' for m in historial[numero])
+
+                                # Buscar último mensaje del bot que pidió permiso
                                 ultimo_mensaje_bot = next(
                                     (m['text'].lower() for m in reversed(historial[numero]) if m['from'] == 'bot'),
                                     ''
                                 )
-                                if '¿nos das permiso para llamarte?' in ultimo_mensaje_bot:
+
+                                if 'permiso para llamarte' in ultimo_mensaje_bot and not llamada_ya_hecha:
                                     if any(word in mensaje_lower for word in ['sí', 'si', 'okay', 'ok', 'yes']):
                                         hacer_llamada(numero)
                                         respuesta = "¡Gracias! Te estamos llamando ahora."
@@ -74,6 +80,7 @@ def webhook():
                                         enviar_whatsapp(numero, respuesta)
                                         historial[numero].append({'from': 'bot', 'text': respuesta})
                                 else:
+                                    # Procesar como mensaje normal
                                     respuesta = consulta_ollama(mensaje)
                                     if respuesta:
                                         enviar_whatsapp(numero, respuesta)
@@ -133,7 +140,6 @@ def send_numbers():
         df = pd.read_excel(file)
         print(f"📋 Columnas detectadas en Excel: {df.columns.tolist()}")
         normalized_cols = [normalize(c) for c in df.columns]
-        print(f"✅ Columnas normalizadas: {normalized_cols}")
         col_map = {normalize(c): c for c in df.columns}
 
         if 'nombre' not in normalized_cols or 'numero' not in normalized_cols:
