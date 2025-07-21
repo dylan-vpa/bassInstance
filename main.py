@@ -30,71 +30,49 @@ def normalize(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn').lower().strip()
 
 def generar_audio(texto):
-    try:
-        headers = {'xi-api-key': ELEVENLABS_API_KEY}
-        payload = {'text': texto, 'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75}}
-        resp = requests.post(
-            f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
-            headers=headers, json=payload, timeout=30
-        )
-        if resp.ok:
-            audio_filename = f'audio_{os.urandom(4).hex()}.mp3'
-            audio_path = os.path.join('static', audio_filename)
-            with open(audio_path, 'wb') as f:
-                f.write(resp.content)
-            print(f"✅ Audio generado: {audio_path}")
-            return audio_path
-        else:
-            print(f"❌ ElevenLabs error: {resp.text}")
-            return None
-    except Exception as e:
-        print(f"❌ Audio error: {str(e)}")
-        return None
+    headers = {'xi-api-key': ELEVENLABS_API_KEY}
+    payload = {'text': texto, 'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75}}
+    resp = requests.post(
+        f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
+        headers=headers, json=payload, timeout=30
+    )
+    if resp.ok:
+        audio_filename = f'audio_{os.urandom(4).hex()}.mp3'
+        audio_path = os.path.join('static', audio_filename)
+        with open(audio_path, 'wb') as f:
+            f.write(resp.content)
+        return audio_path
+    return None
 
 def consulta_ollama(prompt):
-    try:
-        resp = requests.post(OLLAMA_URL, json={'model': 'ana', 'prompt': prompt, 'stream': False}, timeout=30)
-        if resp.ok:
-            respuesta = resp.json().get('response', '')
-            return respuesta
-        else:
-            print(f"❌ Ollama error: {resp.text}")
-            return 'No entendí bien, ¿puedes repetir?'
-    except Exception as e:
-        print(f"❌ Ollama error: {str(e)}")
-        return 'No entendí bien, ¿puedes repetir?'
+    resp = requests.post(OLLAMA_URL, json={'model': 'ana', 'prompt': prompt, 'stream': False}, timeout=30)
+    if resp.ok:
+        return resp.json().get('response', '')
+    return 'No entendí bien, ¿puedes repetir?'
 
 def enviar_whatsapp(numero, mensaje):
-    try:
-        payload = {'messaging_product': 'whatsapp', 'to': numero, 'type': 'text', 'text': {'body': mensaje}}
-        headers = {'Authorization': f'Bearer {WHATSAPP_TOKEN}', 'Content-Type': 'application/json'}
-        resp = requests.post(WHATSAPP_URL, json=payload, headers=headers)
-        if not resp.ok:
-            print(f"❌ Error enviando WhatsApp a {numero}: {resp.text}")
-    except Exception as e:
-        print(f"❌ WhatsApp error: {str(e)}")
+    payload = {'messaging_product': 'whatsapp', 'to': numero, 'type': 'text', 'text': {'body': mensaje}}
+    headers = {'Authorization': f'Bearer {WHATSAPP_TOKEN}', 'Content-Type': 'application/json'}
+    requests.post(WHATSAPP_URL, json=payload, headers=headers)
 
 @app.route('/sendNumbers', methods=['POST'])
 def send_numbers():
-    try:
-        file = request.files['file']
-        df = pd.read_excel(file)
-        normalized_cols = [normalize(c) for c in df.columns]
-        col_map = {normalize(c): c for c in df.columns}
-        if 'nombre' not in normalized_cols or 'numero' not in normalized_cols:
-            return jsonify({'error': 'El Excel debe tener columnas nombre y número'}), 400
-        enviados = 0
-        for _, row in df.iterrows():
-            nombre = str(row[col_map['nombre']]).strip()
-            numero = str(row[col_map['numero']]).strip()
-            if numero.lower() != 'nan':
-                mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
-                print(f"[WHATSAPP-BOT] {numero}: {mensaje}")
-                enviar_whatsapp(numero, mensaje)
-                enviados += 1
-        return jsonify({'status': f'{enviados} mensajes enviados'}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+    file = request.files['file']
+    df = pd.read_excel(file)
+    normalized_cols = [normalize(c) for c in df.columns]
+    col_map = {normalize(c): c for c in df.columns}
+    if 'nombre' not in normalized_cols or 'numero' not in normalized_cols:
+        return jsonify({'error': 'El Excel debe tener columnas nombre y número'}), 400
+    enviados = 0
+    for _, row in df.iterrows():
+        nombre = str(row[col_map['nombre']]).strip()
+        numero = str(row[col_map['numero']]).strip()
+        if numero.lower() != 'nan':
+            mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
+            enviar_whatsapp(numero, mensaje)
+            historial[numero] = [f"IA: {mensaje}"]
+            enviados += 1
+    return jsonify({'status': f'{enviados} mensajes enviados'}), 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -107,29 +85,22 @@ def webhook():
                 numero = message['from']
                 if message['type'] == 'text':
                     texto_usuario = message['text']['body'].lower().strip()
-                    print(f"[WHATSAPP-USUARIO] {numero}: {texto_usuario}")
-
                     historial.setdefault(numero, [])
-
-                    # Revisa la última pregunta del bot para saber si preguntó por llamada
                     ultima_respuesta_bot = historial[numero][-1] if historial[numero] else ""
                     historial[numero].append(f"Usuario: {texto_usuario}")
 
-                    if "puedo llamarte" in ultima_respuesta_bot.lower() or "permiso para llamarte" in ultima_respuesta_bot.lower():
-                        if texto_usuario in ['sí', 'si', 'claro', 'dale', 'vale', 'ok']:
+                    if "permiso para llamarte" in ultima_respuesta_bot.lower():
+                        if texto_usuario in ['sí', 'si', 'claro', 'dale', 'vale', 'ok', 'ai']:
                             respuesta = "Perfecto, te llamo en un momento."
                             enviar_whatsapp(numero, respuesta)
-                            print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
                             ultimo_llamado['numero'] = numero
                             hacer_llamada(numero)
                         else:
                             respuesta = consulta_ollama(texto_usuario)
                             enviar_whatsapp(numero, respuesta)
-                            print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
                     else:
                         respuesta = consulta_ollama(texto_usuario)
                         enviar_whatsapp(numero, respuesta)
-                        print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
 
                     historial[numero].append(f"IA: {respuesta}")
 
@@ -148,11 +119,9 @@ def twiml_call():
         method='POST',
         timeout=5,
         speechTimeout='auto',
-        language='es-CO'  # Español Colombia para mejor reconocimiento
+        language='es-CO'
     )
-    numero = ultimo_llamado.get('numero')
     saludo = "Hola, soy Ana. ¿Cómo puedo ayudarte?"
-    print(f"[LLAMADA-BOT] {saludo}")
     audio_path = generar_audio(saludo)
     if audio_path:
         audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
@@ -166,11 +135,8 @@ def twiml_call():
 def twiml_response():
     response = VoiceResponse()
     user_input = request.form.get('SpeechResult')
-    print(f"[LLAMADA-USUARIO RAW] {user_input}")
-
-    if user_input and user_input.strip() != '':
+    if user_input and user_input.strip():
         respuesta = consulta_ollama(user_input)
-        print(f"[LLAMADA-BOT] {respuesta}")
         audio_path = generar_audio(respuesta)
         gather = Gather(
             input='speech',
@@ -187,22 +153,18 @@ def twiml_response():
             gather.say(respuesta, language='es-CO')
         response.append(gather)
     else:
-        print("[LLAMADA] No se reconoció audio, repitiendo pregunta")
-        response.say("No escuché nada. ¿Puedes repetir, por favor?", language='es-CO')
+        response.say("No escuché nada. ¿Puedes repetir?", language='es-CO')
         response.redirect('/twiml/call')
     return str(response), 200, {'Content-Type': 'text/xml'}
 
 @app.route('/audio/<filename>', methods=['GET'])
 def serve_audio(filename):
     file_path = os.path.join('static', filename)
-    if os.path.exists(file_path):
-        return send_file(file_path, mimetype='audio/mpeg')
-    return jsonify({'error': 'Archivo no encontrado'}), 404
+    return send_file(file_path, mimetype='audio/mpeg') if os.path.exists(file_path) else ('', 404)
 
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({'status': 'ok'})
 
 if __name__ == '__main__':
-    print("🚀 Iniciando API...")
     app.run(host='0.0.0.0', port=4000, debug=True)
