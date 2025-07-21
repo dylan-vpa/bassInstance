@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script para instalar dependencias, configurar el entorno y ejecutar el bot de WhatsApp con Ollama
+# Script para instalar dependencias, configurar el entorno y ejecutar el bot de WhatsApp con Ollama (main.py)
 
 # Colores para mensajes en la terminal
 RED='\033[0;31m'
@@ -85,7 +85,7 @@ else
 fi
 
 # 7. Verificar la existencia del script de Python
-check_file "whatsapp_bot.py"
+check_file "main.py"
 
 # 8. Instalar ngrok si no está presente
 if ! command -v ngrok &> /dev/null; then
@@ -104,8 +104,8 @@ else
 fi
 
 # 9. Iniciar el servidor Flask
-echo -e "${GREEN}Iniciando el servidor Flask...${NC}"
-python3 whatsapp_bot.py &
+echo -e "${GREEN}Iniciando el servidor Flask (main.py)...${NC}"
+python3 main.py &
 FLASK_PID=$!
 sleep 5
 if ! ps -p $FLASK_PID > /dev/null; then
