@@ -25,18 +25,18 @@ SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:4000')
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}
-audios_generados = {}
+ultimo_audio_generado = {'numero': None, 'audio_path': None, 'audio_url': None, 'mensaje': None}
 os.makedirs('static', exist_ok=True)
 
 def normalize(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn').lower().strip()
 
-def generar_audio_respuesta(numero, texto_usuario):
+def generar_audio_respuesta(texto_usuario):
     respuesta_ia = consulta_ollama(f"El usuario dijo: {texto_usuario}. Responde breve y amigable.")
     audio_path = generar_audio_elevenlabs(respuesta_ia)
     if audio_path:
         audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
-        audios_generados[numero] = {'audio_path': audio_path, 'audio_url': audio_url, 'mensaje': respuesta_ia}
+        ultimo_audio_generado.update({'audio_path': audio_path, 'audio_url': audio_url, 'mensaje': respuesta_ia})
         return True
     return False
 
@@ -57,10 +57,11 @@ def webhook():
                         llamada_ya_hecha = any(m.get('from') == 'call' for m in historial[numero])
                         ultimo_mensaje_bot = next((m['text'].lower() for m in reversed(historial[numero]) if m['from'] == 'bot'), '')
                         if 'permiso para llamarte' in ultimo_mensaje_bot and not llamada_ya_hecha:
-                            if generar_audio_respuesta(numero, mensaje):
+                            if generar_audio_respuesta(mensaje):
                                 hacer_llamada(numero)
                                 enviar_whatsapp(numero, "¡Gracias! Te estamos llamando ahora.")
-                                historial[numero].append({'from': 'call', 'audio_file': audios_generados[numero]['audio_path'], 'message': audios_generados[numero]['mensaje']})
+                                historial[numero].append({'from': 'call', 'audio_file': ultimo_audio_generado['audio_path'], 'message': ultimo_audio_generado['mensaje']})
+                                ultimo_audio_generado['numero'] = numero  # Guardar número activo
                             else:
                                 enviar_whatsapp(numero, "No pudimos generar la llamada, intenta más tarde.")
                         else:
@@ -98,9 +99,9 @@ def consulta_ollama(prompt, max_retries=3):
 @app.route('/sendNumbers', methods=['POST'])
 def send_numbers():
     try:
-        if 'file' not in request.files:
+        file = request.files.get('file')
+        if not file or file.filename == '':
             return jsonify({'error': 'No se proporcionó archivo válido'}), 400
-        file = request.files['file']
         df = pd.read_excel(file)
         normalized_cols = [normalize(c) for c in df.columns]
         col_map = {normalize(c): c for c in df.columns}
@@ -124,20 +125,24 @@ def send_numbers():
 
 def hacer_llamada(numero):
     try:
-        twiml_url = f"{SERVER_URL}/twiml/call/{numero}"
+        twiml_url = f"{SERVER_URL}/twiml/call"  # ÚNICO ENDPOINT
         call = client.calls.create(to=numero, from_=TWILIO_CALLER_ID, url=twiml_url, method='GET')
         print(f"✅ Llamada iniciada a {numero}, SID: {call.sid}")
     except Exception as e:
         print(f"❌ Error haciendo llamada a {numero}: {str(e)}")
 
-@app.route('/twiml/call/<numero>', methods=['GET'])
-def twiml_call(numero):
+@app.route('/twiml/call', methods=['GET'])
+def twiml_call():
     response = VoiceResponse()
     try:
-        audio_info = audios_generados.get(numero)
-        if audio_info and os.path.exists(audio_info['audio_path']):
-            response.play(audio_info['audio_url'])
+        numero = ultimo_audio_generado.get('numero')
+        audio_path = ultimo_audio_generado.get('audio_path')
+        audio_url = ultimo_audio_generado.get('audio_url')
+        if numero and audio_path and os.path.exists(audio_path):
+            print(f"🎵 Twilio reproducirá audio para {numero}: {audio_url}")
+            response.play(audio_url)
         else:
+            print(f"⚠️ No se encontró audio preparado, usando fallback.")
             response.say("Lo siento, no tengo un mensaje para ti ahora.")
         response.hangup()
     except Exception as e:
