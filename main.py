@@ -25,45 +25,76 @@ SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:4000')  # URL de tu servi
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}  # Historial en memoria
 
-# --------- Recibir mensajes de WhatsApp ----------
-@app.route('/webhook', methods=['POST'])
+# --------- Verificación y recepción de mensajes de WhatsApp ----------
+@app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
-    try:
-        data = request.json
-        print(f"Webhook recibido: {data}")
+    # Verificación del webhook (GET)
+    if request.method == 'GET':
+        hub_mode = request.args.get('hub.mode')
+        hub_challenge = request.args.get('hub.challenge')
+        hub_verify_token = request.args.get('hub.verify_token')
         
-        # Verificar estructura del webhook de WhatsApp Business API
-        if 'entry' in data and data['entry']:
-            entry = data['entry'][0]
-            if 'changes' in entry and entry['changes']:
-                change = entry['changes'][0]
-                if 'value' in change and 'messages' in change['value']:
-                    messages = change['value']['messages']
-                    for message in messages:
-                        numero = message['from']
-                        if message['type'] == 'text':
-                            mensaje = message['text']['body']
-                            
-                            # Guardar en historial
-                            historial.setdefault(numero, []).append({'from': 'user', 'text': mensaje})
-                            
-                            # Verificar si es respuesta de permiso
-                            mensaje_lower = mensaje.lower()
-                            if any(word in mensaje_lower for word in ['sí', 'si', 'okay', 'ok', 'yes']):
-                                hacer_llamada(numero)
-                                respuesta = "¡Gracias! Te estamos llamando ahora."
-                            else:
-                                # Respuesta normal con IA
-                                respuesta = consulta_ollama(mensaje)
-                            
-                            # Enviar respuesta
-                            enviar_whatsapp(numero, respuesta)
-                            historial[numero].append({'from': 'bot', 'text': respuesta})
+        if hub_mode == 'subscribe' and hub_verify_token == os.getenv('WHATSAPP_VERIFY_TOKEN'):
+            print(f"✅ Webhook verificado correctamente. Challenge: {hub_challenge}")
+            return hub_challenge
+        else:
+            print(f"❌ Token de verificación incorrecto. Esperado: {os.getenv('WHATSAPP_VERIFY_TOKEN')}, Recibido: {hub_verify_token}")
+            return 'Forbidden', 403
+    
+# --------- Verificación y recepción de mensajes de WhatsApp ----------
+@app.route('/webhook', methods=['GET', 'POST'])
+def webhook():
+    # Verificación del webhook (GET)
+    if request.method == 'GET':
+        hub_mode = request.args.get('hub.mode')
+        hub_challenge = request.args.get('hub.challenge')
+        hub_verify_token = request.args.get('hub.verify_token')
         
-        return jsonify({'status': 'ok'}), 200
-    except Exception as e:
-        print(f"Error en webhook: {str(e)}")
-        return jsonify({'error': str(e)}), 400
+        if hub_mode == 'subscribe' and hub_verify_token == os.getenv('WHATSAPP_VERIFY_TOKEN'):
+            print(f"✅ Webhook verificado correctamente. Challenge: {hub_challenge}")
+            return hub_challenge
+        else:
+            print(f"❌ Token de verificación incorrecto. Esperado: {os.getenv('WHATSAPP_VERIFY_TOKEN')}, Recibido: {hub_verify_token}")
+            return 'Forbidden', 403
+    
+    # Procesamiento de mensajes (POST)
+    elif request.method == 'POST':
+        try:
+            data = request.json
+            print(f"Webhook recibido: {data}")
+            
+            # Verificar estructura del webhook de WhatsApp Business API
+            if 'entry' in data and data['entry']:
+                entry = data['entry'][0]
+                if 'changes' in entry and entry['changes']:
+                    change = entry['changes'][0]
+                    if 'value' in change and 'messages' in change['value']:
+                        messages = change['value']['messages']
+                        for message in messages:
+                            numero = message['from']
+                            if message['type'] == 'text':
+                                mensaje = message['text']['body']
+                                
+                                # Guardar en historial
+                                historial.setdefault(numero, []).append({'from': 'user', 'text': mensaje})
+                                
+                                # Verificar si es respuesta de permiso
+                                mensaje_lower = mensaje.lower()
+                                if any(word in mensaje_lower for word in ['sí', 'si', 'okay', 'ok', 'yes']):
+                                    hacer_llamada(numero)
+                                    respuesta = "¡Gracias! Te estamos llamando ahora."
+                                else:
+                                    # Respuesta normal con IA
+                                    respuesta = consulta_ollama(mensaje)
+                                
+                                # Enviar respuesta
+                                enviar_whatsapp(numero, respuesta)
+                                historial[numero].append({'from': 'bot', 'text': respuesta})
+            
+            return jsonify({'status': 'ok'}), 200
+        except Exception as e:
+            print(f"Error en webhook: {str(e)}")
+            return jsonify({'error': str(e)}), 400
 
 # --------- Enviar mensaje por WhatsApp ----------
 def enviar_whatsapp(numero, mensaje):
