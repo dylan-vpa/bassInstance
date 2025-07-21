@@ -106,14 +106,27 @@ def webhook():
             for message in messages:
                 numero = message['from']
                 if message['type'] == 'text':
-                    texto_usuario = message['text']['body']
+                    texto_usuario = message['text']['body'].lower().strip()
                     print(f"[WHATSAPP-USUARIO] {numero}: {texto_usuario}")
-                    ultimo_llamado['numero'] = numero
-                    respuesta = consulta_ollama("El usuario dijo sí. Inicia conversación.")
-                    print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
-                    audio_path = generar_audio(respuesta)
-                    if audio_path:
-                        hacer_llamada(numero)
+
+                    historial.setdefault(numero, []).append(f"Usuario: {texto_usuario}")
+
+                    if historial[numero] and 'puedo llamarte' in historial[numero][-2].lower():
+                        if texto_usuario in ['sí', 'si', 'claro', 'dale', 'vale', 'ok']:
+                            respuesta = consulta_ollama("El usuario aceptó la llamada. Inicia conversación por llamada.")
+                            print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
+                            enviar_whatsapp(numero, respuesta)
+                            ultimo_llamado['numero'] = numero
+                            hacer_llamada(numero)
+                        else:
+                            respuesta = consulta_ollama(texto_usuario)
+                            enviar_whatsapp(numero, respuesta)
+                    else:
+                        respuesta = consulta_ollama(texto_usuario)
+                        enviar_whatsapp(numero, respuesta)
+
+                    historial[numero].append(f"IA: {respuesta}")
+
     return jsonify({'status': 'ok'}), 200
 
 def hacer_llamada(numero):
