@@ -109,21 +109,27 @@ def webhook():
                     texto_usuario = message['text']['body'].lower().strip()
                     print(f"[WHATSAPP-USUARIO] {numero}: {texto_usuario}")
 
-                    historial.setdefault(numero, []).append(f"Usuario: {texto_usuario}")
+                    historial.setdefault(numero, [])
 
-                    if historial[numero] and 'puedo llamarte' in historial[numero][-2].lower():
+                    # Revisa la última pregunta del bot para saber si preguntó por llamada
+                    ultima_respuesta_bot = historial[numero][-1] if historial[numero] else ""
+                    historial[numero].append(f"Usuario: {texto_usuario}")
+
+                    if "puedo llamarte" in ultima_respuesta_bot.lower() or "permiso para llamarte" in ultima_respuesta_bot.lower():
                         if texto_usuario in ['sí', 'si', 'claro', 'dale', 'vale', 'ok']:
-                            respuesta = consulta_ollama("El usuario aceptó la llamada. Inicia conversación por llamada.")
-                            print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
+                            respuesta = "Perfecto, te llamo en un momento."
                             enviar_whatsapp(numero, respuesta)
+                            print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
                             ultimo_llamado['numero'] = numero
                             hacer_llamada(numero)
                         else:
                             respuesta = consulta_ollama(texto_usuario)
                             enviar_whatsapp(numero, respuesta)
+                            print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
                     else:
                         respuesta = consulta_ollama(texto_usuario)
                         enviar_whatsapp(numero, respuesta)
+                        print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
 
                     historial[numero].append(f"IA: {respuesta}")
 
