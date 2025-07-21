@@ -1,7 +1,8 @@
 from flask import Flask, request, jsonify, send_file
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Gather
-import requests, pandas as pd, os, unicodedata
+import requests, pandas as pd, os, unicodedata, threading, time
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,6 +22,9 @@ client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}
 ultimo_llamado = {'numero': None}
 os.makedirs('static', exist_ok=True)
+
+# NUEVO: seguimiento por número
+seguimiento = {}
 
 def normalize(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn').lower().strip()
@@ -64,6 +68,14 @@ def send_numbers():
             mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
             enviar_whatsapp(numero, mensaje)
             historial[numero] = [f"IA: {mensaje}"]
+            seguimiento[numero] = {
+                'nombre': nombre,
+                'mensajes_enviados': 1,
+                'ultimo_mensaje': datetime.now(),
+                'llamadas_realizadas': 0,
+                'ultima_llamada': datetime(2000, 1, 1),
+                'responde': False
+            }
             print(f"[WhatsApp-BOT] {numero}: {mensaje}")
             enviados += 1
     return jsonify({'status': f'{enviados} mensajes enviados'}), 200
@@ -79,27 +91,14 @@ def webhook():
                 if message['type'] == 'text':
                     texto_usuario = message['text']['body'].strip()
                     historial.setdefault(numero, [])
-                    ultima_respuesta_bot = historial[numero][-1] if historial[numero] else ""
                     historial[numero].append(f"Usuario: {texto_usuario}")
+                    seguimiento.setdefault(numero, {'responde': False}).update({'responde': True})
                     print(f"[WhatsApp-Usuario] {numero}: {texto_usuario}")
 
-                    if "permiso para llamarte" in ultima_respuesta_bot.lower():
-                        if texto_usuario.lower() in ['sí', 'si', 'claro', 'dale', 'vale', 'ok', 'ai']:
-                            respuesta = "Perfecto, te llamo en un momento."
-                            enviar_whatsapp(numero, respuesta)
-                            ultimo_llamado['numero'] = numero
-                            hacer_llamada(numero)
-                            print(f"[WhatsApp-BOT] {numero}: {respuesta}")
-                        else:
-                            respuesta = consulta_ollama(texto_usuario)
-                            enviar_whatsapp(numero, respuesta)
-                            print(f"[WhatsApp-BOT Chat] {numero}: {respuesta}")
-                    else:
-                        respuesta = consulta_ollama(texto_usuario)
-                        enviar_whatsapp(numero, respuesta)
-                        print(f"[WhatsApp-BOT Chat] {numero}: {respuesta}")
-
+                    respuesta = consulta_ollama(texto_usuario)
+                    enviar_whatsapp(numero, respuesta)
                     historial[numero].append(f"IA: {respuesta}")
+                    print(f"[WhatsApp-BOT Chat] {numero}: {respuesta}")
 
     return jsonify({'status': 'ok'}), 200
 
@@ -148,5 +147,48 @@ def serve_audio(filename):
 def health_check():
     return jsonify({'status': 'ok'})
 
+# NUEVO: hilo que envía mensajes y llamadas automáticos
+def enviar_mensajes_programados():
+    while True:
+        now = datetime.now()
+        for numero, info in list(seguimiento.items()):
+            if info['responde']:
+                continue  # Ya respondió
+
+            if info['mensajes_enviados'] < 5:
+                delta = now - info['ultimo_mensaje']
+                if delta >= timedelta(days=1):
+                    mensaje = f"Hola {info['nombre']}, ¿nos das permiso para llamarte?"
+                    enviar_whatsapp(numero, mensaje)
+                    historial[numero].append(f"IA: {mensaje}")
+                    info['mensajes_enviados'] += 1
+                    info['ultimo_mensaje'] = now
+                    print(f"[WhatsApp-BOT] {numero}: {mensaje}")
+
+            elif info['llamadas_realizadas'] < 3:
+                delta = now - info['ultima_llamada']
+                if delta >= timedelta(days=1):
+                    hacer_llamada(numero)
+                    info['llamadas_realizadas'] += 1
+                    info['ultima_llamada'] = now
+                    print(f"[Llamada-Iniciada] Llamando a {numero}")
+
+            else:
+                print(f"[FIN] No se hará más con {numero}")
+                seguimiento.pop(numero)
+
+        time.sleep(3600)  # Revisa cada hora
+
+# NUEVO: endpoint para obtener estado de todos los números
+@app.route('/estado', methods=['GET'])
+def estado():
+    estados = {}
+    for numero, conversaciones in historial.items():
+        chat = '\n'.join(conversaciones)
+        resumen = consulta_ollama(f"Resume la conversación y da un estado general en pocas palabras:\n{chat}")
+        estados[numero] = resumen
+    return jsonify(estados)
+
 if __name__ == '__main__':
+    threading.Thread(target=enviar_mensajes_programados, daemon=True).start()
     app.run(host='0.0.0.0', port=4000, debug=True)
