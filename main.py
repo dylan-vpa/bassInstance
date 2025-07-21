@@ -4,6 +4,7 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 import requests, pandas as pd, os, unicodedata, threading, time
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import re
 
 load_dotenv()
 app = Flask(__name__)
@@ -45,8 +46,8 @@ def consulta_ollama(prompt):
     resp = requests.post(OLLAMA_URL, json={'model': 'ana', 'prompt': prompt, 'stream': False}, timeout=30)
     if resp.ok:
         respuesta = resp.json().get('response', '')
-        # Quitar bloque <think>...</think> si existe
-        respuesta = respuesta.replace('<think>', '').replace('</think>', '').strip()
+        # Eliminar todo el bloque <think> ... </think>
+        respuesta = re.sub(r'<think>.*?</think>', '', respuesta, flags=re.DOTALL).strip()
         return respuesta
     return 'No entendí bien, ¿puedes repetir?'
 
