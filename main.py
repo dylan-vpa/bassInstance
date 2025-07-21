@@ -40,11 +40,14 @@ def generar_audio(texto):
             f.write(resp.content)
         return audio_path
     return None
-
+    
 def consulta_ollama(prompt):
     resp = requests.post(OLLAMA_URL, json={'model': 'ana', 'prompt': prompt, 'stream': False}, timeout=30)
     if resp.ok:
-        return resp.json().get('response', '')
+        respuesta = resp.json().get('response', '')
+        # Quitar bloque <think>...</think> si existe
+        respuesta = respuesta.replace('<think>', '').replace('</think>', '').strip()
+        return respuesta
     return 'No entendí bien, ¿puedes repetir?'
 
 def enviar_whatsapp(numero, mensaje):
