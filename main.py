@@ -27,6 +27,9 @@ client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}
 ultimo_llamado = {'numero': None, 'audio_file': None}
 
+# Asegurar carpeta static
+os.makedirs('static', exist_ok=True)
+
 def normalize(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s)
                    if unicodedata.category(c) != 'Mn').lower().strip()
@@ -40,7 +43,7 @@ def generar_audio_respuesta(texto_usuario):
 def webhook():
     try:
         data = request.json
-        print(f"Webhook recibido: {data}")
+        print(f"📥 Webhook recibido: {data}")
         if 'entry' in data and data['entry']:
             entry = data['entry'][0]
             if 'changes' in entry and entry['changes']:
@@ -77,7 +80,7 @@ def webhook():
                                     historial[numero].append({'from': 'bot', 'text': respuesta})
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
-        print(f"Error en webhook: {str(e)}")
+        print(f"❌ Error en webhook: {str(e)}")
         return jsonify({'error': str(e)}), 400
 
 def enviar_whatsapp(numero, mensaje):
@@ -86,9 +89,11 @@ def enviar_whatsapp(numero, mensaje):
         headers = {'Authorization': f'Bearer {WHATSAPP_TOKEN}', 'Content-Type': 'application/json'}
         resp = requests.post(WHATSAPP_URL, json=payload, headers=headers)
         if not resp.ok:
-            print(f"Error enviando mensaje a {numero}: {resp.text}")
+            print(f"❌ Error enviando mensaje a {numero}: {resp.text}")
+        else:
+            print(f"✅ Mensaje enviado a {numero}")
     except Exception as e:
-        print(f"Error en enviar_whatsapp: {str(e)}")
+        print(f"❌ Error en enviar_whatsapp: {str(e)}")
 
 def consulta_ollama(prompt, max_retries=3):
     for attempt in range(max_retries):
@@ -97,9 +102,9 @@ def consulta_ollama(prompt, max_retries=3):
             if resp.ok:
                 return resp.json().get('response', '')
             else:
-                print(f"Error consultando Ollama (intento {attempt +1}): {resp.text}")
+                print(f"❌ Error consultando Ollama (intento {attempt +1}): {resp.text}")
         except Exception as e:
-            print(f"Error en consulta_ollama (intento {attempt +1}): {str(e)}")
+            print(f"❌ Error en consulta_ollama (intento {attempt +1}): {str(e)}")
         time.sleep(1)
     return 'Hola, gracias por contestar.'
 
@@ -126,16 +131,16 @@ def send_numbers():
             enviados += 1
         return jsonify({'status': f'{enviados} mensajes enviados'}), 200
     except Exception as e:
-        print(f"Error en send_numbers: {str(e)}")
+        print(f"❌ Error en send_numbers: {str(e)}")
         return jsonify({'error': str(e)}), 400
 
 def hacer_llamada():
     try:
         twiml_url = f"{SERVER_URL}/twiml/call"
         call = client.calls.create(to=ultimo_llamado['numero'], from_=TWILIO_CALLER_ID, url=twiml_url, method='GET')
-        print(f"Llamada iniciada a {ultimo_llamado['numero']}, SID: {call.sid}")
+        print(f"✅ Llamada iniciada a {ultimo_llamado['numero']}, SID: {call.sid}")
     except Exception as e:
-        print(f"Error haciendo llamada a {ultimo_llamado['numero']}: {str(e)}")
+        print(f"❌ Error haciendo llamada a {ultimo_llamado['numero']}: {str(e)}")
 
 @app.route('/twiml/call', methods=['GET'])
 def twiml_call():
@@ -144,13 +149,15 @@ def twiml_call():
         audio_path = ultimo_llamado.get('audio_file')
         if audio_path and os.path.exists(audio_path):
             audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
+            print(f"✅ Twilio reproducirá: {audio_url}")
             response.play(audio_url)
         else:
+            print("⚠️ No se encontró audio, usando fallback")
             response.say("Lo siento, no tengo un mensaje para ti ahora.")
         response.hangup()
         return str(response), 200, {'Content-Type': 'text/xml'}
     except Exception as e:
-        print(f"Error en twiml_call: {str(e)}")
+        print(f"❌ Error en twiml_call: {str(e)}")
         response.say("Ocurrió un error en el sistema.")
         response.hangup()
         return str(response), 200, {'Content-Type': 'text/xml'}
@@ -163,15 +170,15 @@ def generar_audio_elevenlabs(texto):
         if resp.ok:
             audio_filename = f'audio_{os.urandom(4).hex()}.mp3'
             audio_path = os.path.join('static', audio_filename)
-            os.makedirs('static', exist_ok=True)
             with open(audio_path, 'wb') as f:
                 f.write(resp.content)
+            print(f"✅ Audio generado: {audio_path}")
             return audio_path
         else:
-            print(f"Error en ElevenLabs: {resp.text}")
+            print(f"❌ Error en ElevenLabs: {resp.text}")
             return None
     except Exception as e:
-        print(f"Error generando audio: {str(e)}")
+        print(f"❌ Error generando audio: {str(e)}")
         return None
 
 @app.route('/audio/<filename>', methods=['GET'])
@@ -181,9 +188,10 @@ def serve_audio(filename):
         if os.path.exists(file_path):
             return send_file(file_path, mimetype='audio/mpeg')
         else:
+            print(f"⚠️ Archivo no encontrado: {file_path}")
             return jsonify({'error': 'Archivo no encontrado'}), 404
     except Exception as e:
-        print(f"Error sirviendo audio: {str(e)}")
+        print(f"❌ Error sirviendo audio: {str(e)}")
         return jsonify({'error': str(e)}), 400
 
 @app.route('/history/<numero>', methods=['GET'])
