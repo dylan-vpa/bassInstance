@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, send_file
 from twilio.rest import Client
+from twilio.twiml import TwiML
 import requests
 import pandas as pd
 import os
@@ -19,6 +20,7 @@ TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_CALLER_ID = os.getenv('TWILIO_CALLER_ID')
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID')
+SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:4000')  # URL de tu servidor
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}  # Historial en memoria
@@ -26,109 +28,245 @@ historial = {}  # Historial en memoria
 # --------- Recibir mensajes de WhatsApp ----------
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.json
-    numero = data['from']
-    mensaje = data['text']['body']
-    historial.setdefault(numero, []).append({'from': 'user', 'text': mensaje})
-
-    respuesta = consulta_ollama(mensaje)
-    enviar_whatsapp(numero, respuesta)
-    historial[numero].append({'from': 'bot', 'text': respuesta})
-
-    return jsonify({'status': 'ok'}), 200
+    try:
+        data = request.json
+        print(f"Webhook recibido: {data}")
+        
+        # Verificar estructura del webhook de WhatsApp Business API
+        if 'entry' in data and data['entry']:
+            entry = data['entry'][0]
+            if 'changes' in entry and entry['changes']:
+                change = entry['changes'][0]
+                if 'value' in change and 'messages' in change['value']:
+                    messages = change['value']['messages']
+                    for message in messages:
+                        numero = message['from']
+                        if message['type'] == 'text':
+                            mensaje = message['text']['body']
+                            
+                            # Guardar en historial
+                            historial.setdefault(numero, []).append({'from': 'user', 'text': mensaje})
+                            
+                            # Verificar si es respuesta de permiso
+                            mensaje_lower = mensaje.lower()
+                            if any(word in mensaje_lower for word in ['sí', 'si', 'okay', 'ok', 'yes']):
+                                hacer_llamada(numero)
+                                respuesta = "¡Gracias! Te estamos llamando ahora."
+                            else:
+                                # Respuesta normal con IA
+                                respuesta = consulta_ollama(mensaje)
+                            
+                            # Enviar respuesta
+                            enviar_whatsapp(numero, respuesta)
+                            historial[numero].append({'from': 'bot', 'text': respuesta})
+        
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        print(f"Error en webhook: {str(e)}")
+        return jsonify({'error': str(e)}), 400
 
 # --------- Enviar mensaje por WhatsApp ----------
 def enviar_whatsapp(numero, mensaje):
-    payload = {
-        'messaging_product': 'whatsapp',
-        'to': numero,
-        'type': 'text',
-        'text': {'body': mensaje}
-    }
-    headers = {'Authorization': f'Bearer {WHATSAPP_TOKEN}'}
-    resp = requests.post(WHATSAPP_URL, json=payload, headers=headers)
-    if not resp.ok:
-        print(f"Error enviando mensaje a {numero}: {resp.text}")
+    try:
+        payload = {
+            'messaging_product': 'whatsapp',
+            'to': numero,
+            'type': 'text',
+            'text': {'body': mensaje}
+        }
+        headers = {
+            'Authorization': f'Bearer {WHATSAPP_TOKEN}',
+            'Content-Type': 'application/json'
+        }
+        resp = requests.post(WHATSAPP_URL, json=payload, headers=headers)
+        if not resp.ok:
+            print(f"Error enviando mensaje a {numero}: {resp.text}")
+    except Exception as e:
+        print(f"Error en enviar_whatsapp: {str(e)}")
 
 # --------- Consultar Ollama ----------
 def consulta_ollama(prompt):
-    resp = requests.post(OLLAMA_URL, json={'model': 'ana', 'prompt': prompt})
-    if resp.ok:
-        return resp.json().get('response', 'No entendí.')
-    else:
-        print(f"Error consultando Ollama: {resp.text}")
+    try:
+        payload = {
+            'model': 'ana',
+            'prompt': prompt,
+            'stream': False
+        }
+        resp = requests.post(OLLAMA_URL, json=payload, timeout=30)
+        if resp.ok:
+            data = resp.json()
+            return data.get('response', 'No entendí.')
+        else:
+            print(f"Error consultando Ollama: {resp.text}")
+            return 'Hubo un error al procesar tu mensaje.'
+    except Exception as e:
+        print(f"Error en consulta_ollama: {str(e)}")
         return 'Hubo un error al procesar tu mensaje.'
 
 # --------- Subir Excel con números ----------
 @app.route('/sendNumbers', methods=['POST'])
 def send_numbers():
-    file = request.files['file']
-    df = pd.read_excel(file)
-    for _, row in df.iterrows():
-        nombre = row['nombre']
-        numero = str(row['número'])
-        mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
-        enviar_whatsapp(numero, mensaje)
-    return jsonify({'status': 'mensajes enviados'}), 200
-
-# --------- Procesar respuesta de permiso ----------
-@app.route('/permission_response', methods=['POST'])
-def permission_response():
-    data = request.json
-    numero = data['from']
-    mensaje = data['text']['body'].lower()
-
-    if mensaje in ['sí', 'si', 'okay', 'ok']:
-        hacer_llamada(numero)
-        enviar_whatsapp(numero, "¡Gracias! Te estamos llamando ahora.")
-    else:
-        prompt = f"El usuario dijo: '{mensaje}'. Ayúdame a convencerlo para que nos permita llamarlo, usando un tono amable y persuasivo."
-        respuesta_persuasion = consulta_ollama(prompt)
-        enviar_whatsapp(numero, respuesta_persuasion)
-
-    return jsonify({'status': 'respuesta procesada'}), 200
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No se encontró el archivo'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'error': 'No se seleccionó archivo'}), 400
+        
+        df = pd.read_excel(file)
+        
+        # Verificar columnas requeridas
+        if 'nombre' not in df.columns or 'número' not in df.columns:
+            return jsonify({'error': 'El Excel debe tener columnas "nombre" y "número"'}), 400
+        
+        enviados = 0
+        for _, row in df.iterrows():
+            try:
+                nombre = row['nombre']
+                numero = str(row['número']).strip()
+                
+                # Validar formato de número
+                if not numero or numero == 'nan':
+                    continue
+                    
+                mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
+                enviar_whatsapp(numero, mensaje)
+                
+                # Guardar en historial
+                historial.setdefault(numero, []).append({'from': 'bot', 'text': mensaje})
+                enviados += 1
+                
+            except Exception as e:
+                print(f"Error procesando fila: {str(e)}")
+                continue
+        
+        return jsonify({'status': f'{enviados} mensajes enviados'}), 200
+    
+    except Exception as e:
+        print(f"Error en send_numbers: {str(e)}")
+        return jsonify({'error': str(e)}), 400
 
 # --------- Hacer llamada con Twilio y ElevenLabs ----------
 def hacer_llamada(numero):
-    texto_ia = consulta_ollama("El usuario ha aceptado la llamada. ¿Qué mensaje le doy?")
-    audio_path = generar_audio_elevenlabs(texto_ia)
-    filename = os.path.basename(audio_path)
-    twiml_url = f"https://tu-servidor.com/audio/{filename}"
+    try:
+        # Generar mensaje personalizado
+        texto_ia = consulta_ollama("El usuario ha aceptado la llamada. Genera un mensaje corto y amigable de saludo para una llamada telefónica.")
+        
+        # Generar audio
+        audio_path = generar_audio_elevenlabs(texto_ia)
+        filename = os.path.basename(audio_path)
+        
+        # URL del TwiML que reproduce el audio
+        twiml_url = f"{SERVER_URL}/twiml/{filename}"
+        
+        # Realizar llamada
+        call = client.calls.create(
+            to=numero,
+            from_=TWILIO_CALLER_ID,
+            url=twiml_url,
+            method='GET'
+        )
+        
+        # Guardar en historial
+        historial.setdefault(numero, []).append({
+            'from': 'call', 
+            'sid': call.sid, 
+            'audio_file': filename,
+            'message': texto_ia
+        })
+        
+        print(f"Llamada iniciada a {numero}, SID: {call.sid}")
+        
+    except Exception as e:
+        print(f"Error haciendo llamada a {numero}: {str(e)}")
 
-    call = client.calls.create(
-        to=numero,
-        from_=TWILIO_CALLER_ID,
-        url=twiml_url
-    )
-    historial.setdefault(numero, []).append({'from': 'call', 'sid': call.sid})
+# --------- Generar TwiML para la llamada ----------
+@app.route('/twiml/<filename>', methods=['GET'])
+def generate_twiml(filename):
+    try:
+        response = TwiML()
+        audio_url = f"{SERVER_URL}/audio/{filename}"
+        response.play(audio_url)
+        response.hangup()
+        
+        return str(response), 200, {'Content-Type': 'text/xml'}
+    except Exception as e:
+        print(f"Error generando TwiML: {str(e)}")
+        response = TwiML()
+        response.say("Lo siento, hubo un error.")
+        response.hangup()
+        return str(response), 200, {'Content-Type': 'text/xml'}
 
 # --------- Generar audio con ElevenLabs ----------
 def generar_audio_elevenlabs(texto):
-    headers = {
-        'xi-api-key': ELEVENLABS_API_KEY,
-        'Content-Type': 'application/json'
-    }
-    response = requests.post(
-        f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
-        headers=headers,
-        json={'text': texto, 'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75}}
-    )
-    audio_filename = f'audio_{os.urandom(4).hex()}.mp3'
-    audio_path = os.path.join('static', audio_filename)
-    os.makedirs('static', exist_ok=True)
-    with open(audio_path, 'wb') as f:
-        f.write(response.content)
-    return audio_path
+    try:
+        headers = {
+            'xi-api-key': ELEVENLABS_API_KEY,
+            'Content-Type': 'application/json'
+        }
+        
+        payload = {
+            'text': texto,
+            'voice_settings': {
+                'stability': 0.5,
+                'similarity_boost': 0.75
+            }
+        }
+        
+        response = requests.post(
+            f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        
+        if response.ok:
+            audio_filename = f'audio_{os.urandom(4).hex()}.mp3'
+            audio_path = os.path.join('static', audio_filename)
+            os.makedirs('static', exist_ok=True)
+            
+            with open(audio_path, 'wb') as f:
+                f.write(response.content)
+            
+            return audio_path
+        else:
+            print(f"Error en ElevenLabs: {response.text}")
+            return None
+            
+    except Exception as e:
+        print(f"Error generando audio: {str(e)}")
+        return None
 
 # --------- Servir archivo de audio ----------
 @app.route('/audio/<filename>', methods=['GET'])
 def serve_audio(filename):
-    return send_file(os.path.join('static', filename), mimetype='audio/mpeg')
+    try:
+        file_path = os.path.join('static', filename)
+        if os.path.exists(file_path):
+            return send_file(file_path, mimetype='audio/mpeg')
+        else:
+            return jsonify({'error': 'Archivo no encontrado'}), 404
+    except Exception as e:
+        print(f"Error sirviendo audio: {str(e)}")
+        return jsonify({'error': str(e)}), 400
 
 # --------- Obtener historial ----------
 @app.route('/history/<numero>', methods=['GET'])
 def get_history(numero):
     return jsonify(historial.get(numero, []))
 
+# --------- Endpoint de salud ----------
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        'status': 'ok',
+        'message': 'API funcionando correctamente',
+        'endpoints': ['/webhook', '/sendNumbers', '/history/<numero>', '/audio/<filename>']
+    })
+
 if __name__ == '__main__':
+    print("🚀 Iniciando API...")
+    print(f"🔗 Webhook: http://localhost:4000/webhook")
+    print(f"📋 Health check: http://localhost:4000/health")
     app.run(host='0.0.0.0', port=4000, debug=True)
