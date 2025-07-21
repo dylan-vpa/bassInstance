@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from twilio.rest import Client
 import requests
 import pandas as pd
@@ -18,6 +18,7 @@ TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_CALLER_ID = os.getenv('TWILIO_CALLER_ID')
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
+ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID')
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}  # Guardar mensajes (en memoria; para producción usar DB)
@@ -30,10 +31,9 @@ def webhook():
     mensaje = data['text']['body']
     historial.setdefault(numero, []).append({'from': 'user', 'text': mensaje})
 
-    if 'IA' in mensaje.lower() or 'ollama' in mensaje.lower():
-        respuesta = consulta_ollama(mensaje)
-        enviar_whatsapp(numero, respuesta)
-        historial[numero].append({'from': 'bot', 'text': respuesta})
+    respuesta = consulta_ollama(mensaje)
+    enviar_whatsapp(numero, respuesta)
+    historial[numero].append({'from': 'bot', 'text': respuesta})
 
     return jsonify({'status': 'ok'}), 200
 
@@ -52,8 +52,12 @@ def enviar_whatsapp(numero, mensaje):
 
 # ---------- Consultar Ollama ----------
 def consulta_ollama(prompt):
-    resp = requests.post(OLLAMA_URL, json={'model': 'llama3', 'prompt': prompt})
-    return resp.json().get('response', 'No entendí.')
+    resp = requests.post(OLLAMA_URL, json={'model': 'ana', 'prompt': prompt})
+    if resp.ok:
+        return resp.json().get('response', 'No entendí.')
+    else:
+        print(f"Error consultando Ollama: {resp.text}")
+        return 'Hubo un error al procesar tu mensaje.'
 
 # ---------- Subir Excel y pedir permiso ----------
 @app.route('/sendNumbers', methods=['POST'])
@@ -79,11 +83,14 @@ def permission_response():
 
 # ---------- Hacer llamada usando Twilio y ElevenLabs ----------
 def hacer_llamada(numero):
-    texto = "Hola, soy la asistente virtual. ¿Cómo puedo ayudarte?"
-    audio_url = generar_audio_elevenlabs(texto)
-    
-    # Aquí Twilio espera un TwiML o audio público; debes tener un endpoint para servirlo
-    twiml_url = f"https://tu-servidor.com/twiml/{os.path.basename(audio_url)}"
+    # Consultar IA para generar texto de llamada
+    texto_ia = consulta_ollama("El usuario ha aceptado la llamada. ¿Qué mensaje le doy?")
+    audio_url = generar_audio_elevenlabs(texto_ia)
+
+    # Aquí deberías tener un endpoint que sirva el audio (usamos /audio/<filename>)
+    filename = os.path.basename(audio_url)
+    twiml_url = f"https://tu-servidor.com/audio/{filename}"
+
     call = client.calls.create(
         to=numero,
         from_=TWILIO_CALLER_ID,
@@ -93,16 +100,26 @@ def hacer_llamada(numero):
 
 # ---------- Generar audio con ElevenLabs ----------
 def generar_audio_elevenlabs(texto):
-    headers = {'xi-api-key': ELEVENLABS_API_KEY}
+    headers = {
+        'xi-api-key': ELEVENLABS_API_KEY,
+        'Content-Type': 'application/json'
+    }
     response = requests.post(
-        'https://api.elevenlabs.io/v1/text-to-speech/VOICE_ID',
+        f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
         headers=headers,
         json={'text': texto, 'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75}}
     )
-    audio_path = f'static/audio_{os.urandom(4).hex()}.mp3'
+    audio_filename = f'audio_{os.urandom(4).hex()}.mp3'
+    audio_path = os.path.join('static', audio_filename)
+    os.makedirs('static', exist_ok=True)
     with open(audio_path, 'wb') as f:
         f.write(response.content)
-    return f'https://tu-servidor.com/{audio_path}'
+    return audio_path
+
+# ---------- Endpoint para servir audio ----------
+@app.route('/audio/<filename>', methods=['GET'])
+def serve_audio(filename):
+    return send_file(os.path.join('static', filename), mimetype='audio/mpeg')
 
 # ---------- Consultar historial ----------
 @app.route('/history/<numero>', methods=['GET'])
@@ -110,4 +127,4 @@ def get_history(numero):
     return jsonify(historial.get(numero, []))
 
 if __name__ == '__main__':
-    app.run(port=5000, debug=True)
+    app.run(host='0.0.0.0', port=4000, debug=True)
