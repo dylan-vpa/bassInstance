@@ -1,10 +1,10 @@
-FROM llama3
+FROM qwen3
 
 # Parámetros optimizados para respuestas rápidas y naturales en múltiples canales
 PARAMETER temperature 0.6
 PARAMETER top_p 0.8
 PARAMETER top_k 30
-PARAMETER num_ctx 900
+PARAMETER num_ctx 4000
 PARAMETER repeat_penalty 1.2
 PARAMETER num_predict 100
 PARAMETER seed 42
