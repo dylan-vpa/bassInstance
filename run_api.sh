@@ -1,8 +1,17 @@
 #!/bin/bash
 set -e  # Si falla algo, se detiene
 
+echo "🐍 Configurando entorno virtual Python..."
+if [ ! -d "venv" ]; then
+    echo "📦 Creando entorno virtual..."
+    python3 -m venv venv
+fi
+
+echo "🔌 Activando entorno virtual..."
+source venv/bin/activate
+
 echo "🔧 Instalando dependencias..."
-pip3 install -r requirements.txt
+pip install -r requirements.txt
 
 echo "📁 Verificando archivo .env..."
 if [ ! -f .env ]; then
@@ -40,4 +49,4 @@ echo "🔗 Webhook: http://localhost:4000/webhook"
 echo "📋 Health check: http://localhost:4000/health"
 echo "📊 Para probar: curl http://localhost:4000/health"
 
-python3 main.py
+python main.py
