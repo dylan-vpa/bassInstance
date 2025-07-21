@@ -8,7 +8,6 @@ import time
 from dotenv import load_dotenv
 import unicodedata
 
-# Cargar variables de entorno (.env)
 load_dotenv()
 
 app = Flask(__name__)
@@ -26,31 +25,16 @@ SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:4000')
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}
+ultimo_llamado = {'numero': None, 'audio_file': None}
 
 def normalize(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s)
                    if unicodedata.category(c) != 'Mn').lower().strip()
 
-def generar_audio_respuesta(numero, texto_usuario):
-    """Genera respuesta de IA y la convierte a audio."""
+def generar_audio_respuesta(texto_usuario):
     respuesta_ia = consulta_ollama(f"El usuario dijo: {texto_usuario}. Responde de forma breve y amigable.")
     audio_path = generar_audio_elevenlabs(respuesta_ia)
-    if audio_path:
-        historial.setdefault(numero, []).append({
-            'from': 'call',
-            'audio_file': audio_path,
-            'message': respuesta_ia
-        })
-        print(f"✅ Audio generado para {numero}: {audio_path}")
-    else:
-        print(f"⚠️ No se pudo generar audio para {numero}")
-
-def obtener_audio(numero):
-    """Obtiene el último archivo de audio generado para el número."""
-    for item in reversed(historial.get(numero, [])):
-        if item.get('from') == 'call':
-            return item['audio_file']
-    return None
+    return audio_path, respuesta_ia
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -77,12 +61,15 @@ def webhook():
                             )
 
                             if 'permiso para llamarte' in ultimo_mensaje_bot and not llamada_ya_hecha:
-                                if any(word in mensaje_lower for word in ['sí', 'si', 'okay', 'ok', 'yes']):
-                                    generar_audio_respuesta(numero, mensaje)
-                                    hacer_llamada(numero)
+                                audio_path, respuesta_ia = generar_audio_respuesta(mensaje)
+                                if audio_path:
+                                    ultimo_llamado['numero'] = numero
+                                    ultimo_llamado['audio_file'] = audio_path
+                                    hacer_llamada()
                                     enviar_whatsapp(numero, "¡Gracias! Te estamos llamando ahora.")
+                                    historial[numero].append({'from': 'call', 'audio_file': audio_path, 'message': respuesta_ia})
                                 else:
-                                    enviar_whatsapp(numero, "Gracias por tu respuesta. Si cambias de opinión, avísanos.")
+                                    enviar_whatsapp(numero, "No pudimos generar la llamada, intenta más tarde.")
                             else:
                                 respuesta = consulta_ollama(mensaje)
                                 if respuesta:
@@ -142,30 +129,29 @@ def send_numbers():
         print(f"Error en send_numbers: {str(e)}")
         return jsonify({'error': str(e)}), 400
 
-def hacer_llamada(numero):
+def hacer_llamada():
     try:
-        twiml_url = f"{SERVER_URL}/twiml/general/{numero}"
-        call = client.calls.create(to=numero, from_=TWILIO_CALLER_ID, url=twiml_url, method='GET')
-        historial.setdefault(numero, []).append({'from': 'call', 'sid': call.sid})
-        print(f"Llamada iniciada a {numero}, SID: {call.sid}")
+        twiml_url = f"{SERVER_URL}/twiml/call"
+        call = client.calls.create(to=ultimo_llamado['numero'], from_=TWILIO_CALLER_ID, url=twiml_url, method='GET')
+        print(f"Llamada iniciada a {ultimo_llamado['numero']}, SID: {call.sid}")
     except Exception as e:
-        print(f"Error haciendo llamada a {numero}: {str(e)}")
+        print(f"Error haciendo llamada a {ultimo_llamado['numero']}: {str(e)}")
 
-@app.route('/twiml/general/<numero>', methods=['GET'])
-def twiml_general(numero):
+@app.route('/twiml/call', methods=['GET'])
+def twiml_call():
     response = VoiceResponse()
     try:
-        audio_path = obtener_audio(numero)
+        audio_path = ultimo_llamado.get('audio_file')
         if audio_path and os.path.exists(audio_path):
             audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
             response.play(audio_url)
         else:
-            response.say("Lo siento, no tenemos un mensaje para ti en este momento.")
+            response.say("Lo siento, no tengo un mensaje para ti ahora.")
         response.hangup()
         return str(response), 200, {'Content-Type': 'text/xml'}
     except Exception as e:
-        print(f"Error en twiml_general: {str(e)}")
-        response.say("Ocurrió un error en el sistema. Intenta más tarde.")
+        print(f"Error en twiml_call: {str(e)}")
+        response.say("Ocurrió un error en el sistema.")
         response.hangup()
         return str(response), 200, {'Content-Type': 'text/xml'}
 
