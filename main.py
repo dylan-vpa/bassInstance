@@ -65,7 +65,7 @@ def send_numbers():
         nombre = str(row[col_map['nombre']]).strip()
         numero = str(row[col_map['numero']]).strip()
         if numero.lower() != 'nan':
-            mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
+            mensaje = f"¡Hola {nombre}! Soy Ana de AVANZA 👋. Te contacto porque tenemos condiciones financieras muy especiales para empleados públicos como tú. Tasas desde 1.6% mensual y montos hasta 150 millones 💰. ¿Te interesaría recibir una llamada para conocer más detalles?"
             enviar_whatsapp(numero, mensaje)
             historial[numero] = [f"IA: {mensaje}"]
             seguimiento[numero] = {
