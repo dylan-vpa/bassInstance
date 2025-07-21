@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, send_file
 from twilio.rest import Client
-from twilio.twiml.voice_response import VoiceResponse
+from twilio.twiml.voice_response import VoiceResponse, Gather
 import requests
 import pandas as pd
 import os
@@ -9,10 +9,8 @@ import unicodedata
 from dotenv import load_dotenv
 
 load_dotenv()
-
 app = Flask(__name__)
 
-# Configuración
 WHATSAPP_TOKEN = os.getenv('WHATSAPP_TOKEN')
 WHATSAPP_URL = os.getenv('WHATSAPP_URL')
 OLLAMA_URL = os.getenv('OLLAMA_URL')
@@ -25,8 +23,7 @@ SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:4000')
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}
-audios_generados = {}
-ultimo_llamado = {'numero': None, 'audio_file': None}
+ultimo_llamado = {'numero': None}
 
 os.makedirs('static', exist_ok=True)
 
@@ -44,13 +41,12 @@ def generar_audio(texto):
             audio_path = os.path.join('static', audio_filename)
             with open(audio_path, 'wb') as f:
                 f.write(resp.content)
-            print(f"✅ Audio generado: {audio_path}")
             return audio_path
         else:
-            print(f"❌ Error en ElevenLabs: {resp.text}")
+            print(f"❌ ElevenLabs error: {resp.text}")
             return None
     except Exception as e:
-        print(f"❌ Error generando audio: {str(e)}")
+        print(f"❌ Audio error: {str(e)}")
         return None
 
 def consulta_ollama(prompt):
@@ -59,10 +55,10 @@ def consulta_ollama(prompt):
         if resp.ok:
             return resp.json().get('response', '')
         else:
-            print(f"❌ Error consultando IA: {resp.text}")
+            print(f"❌ Ollama error: {resp.text}")
             return 'No entendí bien, ¿puedes repetir?'
     except Exception as e:
-        print(f"❌ Error consulta_ollama: {str(e)}")
+        print(f"❌ Ollama error: {str(e)}")
         return 'No entendí bien, ¿puedes repetir?'
 
 def enviar_whatsapp(numero, mensaje):
@@ -70,16 +66,12 @@ def enviar_whatsapp(numero, mensaje):
         payload = {'messaging_product': 'whatsapp', 'to': numero, 'type': 'text', 'text': {'body': mensaje}}
         headers = {'Authorization': f'Bearer {WHATSAPP_TOKEN}', 'Content-Type': 'application/json'}
         resp = requests.post(WHATSAPP_URL, json=payload, headers=headers)
-        if not resp.ok:
-            print(f"❌ Error enviando WhatsApp a {numero}: {resp.text}")
     except Exception as e:
-        print(f"❌ Error enviar_whatsapp: {str(e)}")
+        print(f"❌ WhatsApp error: {str(e)}")
 
 @app.route('/sendNumbers', methods=['POST'])
 def send_numbers():
     try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'No se proporcionó archivo válido'}), 400
         file = request.files['file']
         df = pd.read_excel(file)
         normalized_cols = [normalize(c) for c in df.columns]
@@ -90,76 +82,68 @@ def send_numbers():
         for _, row in df.iterrows():
             nombre = str(row[col_map['nombre']]).strip()
             numero = str(row[col_map['numero']]).strip()
-            if not numero or numero.lower() == 'nan':
-                continue
-            mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
-            enviar_whatsapp(numero, mensaje)
-            historial.setdefault(numero, []).append({'from': 'bot', 'text': mensaje})
-            enviados += 1
-        print(f"✅ {enviados} mensajes enviados.")
+            if numero.lower() != 'nan':
+                mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
+                enviar_whatsapp(numero, mensaje)
+                enviados += 1
         return jsonify({'status': f'{enviados} mensajes enviados'}), 200
     except Exception as e:
-        print(f"❌ Error en send_numbers: {str(e)}")
         return jsonify({'error': str(e)}), 400
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    try:
-        data = request.json
-        print(f"📥 Webhook recibido: {data}")
-        for entry in data.get('entry', []):
-            for change in entry.get('changes', []):
-                value = change.get('value', {})
-                messages = value.get('messages', [])
-                for message in messages:
-                    numero = message['from']
-                    if message['type'] == 'text':
-                        mensaje = message['text']['body']
-                        historial.setdefault(numero, []).append({'from': 'user', 'text': mensaje})
-                        llamada_hecha = any(m.get('from') == 'call' for m in historial[numero])
-                        ultimo_bot = next((m['text'].lower() for m in reversed(historial[numero]) if m['from'] == 'bot'), '')
-                        if 'permiso para llamarte' in ultimo_bot and not llamada_hecha:
-                            respuesta_ia = consulta_ollama("El usuario dijo sí. Inicia conversación.")
-                            audio_path = generar_audio(respuesta_ia)
-                            if audio_path:
-                                audios_generados[numero] = {'audio_path': audio_path}
-                                ultimo_llamado['numero'] = numero
-                                hacer_llamada(numero)
-                                historial[numero].append({'from': 'call', 'audio_file': audio_path, 'message': respuesta_ia})
-                                enviar_whatsapp(numero, "¡Gracias! Te estamos llamando ahora.")
-                        else:
-                            respuesta = consulta_ollama(mensaje)
-                            enviar_whatsapp(numero, respuesta)
-                            historial[numero].append({'from': 'bot', 'text': respuesta})
-        return jsonify({'status': 'ok'}), 200
-    except Exception as e:
-        print(f"❌ Error en webhook: {str(e)}")
-        return jsonify({'error': str(e)}), 400
+    data = request.json
+    for entry in data.get('entry', []):
+        for change in entry.get('changes', []):
+            value = change.get('value', {})
+            messages = value.get('messages', [])
+            for message in messages:
+                numero = message['from']
+                if message['type'] == 'text':
+                    ultimo_llamado['numero'] = numero
+                    respuesta = consulta_ollama("El usuario dijo sí. Inicia conversación.")
+                    audio_path = generar_audio(respuesta)
+                    if audio_path:
+                        hacer_llamada(numero)
+    return jsonify({'status': 'ok'}), 200
 
 def hacer_llamada(numero):
-    try:
-        twiml_url = f"{SERVER_URL}/twiml/call"
-        call = client.calls.create(to=numero, from_=TWILIO_CALLER_ID, url=twiml_url, method='GET')
-        print(f"✅ Llamada iniciada a {numero}, SID: {call.sid}")
-    except Exception as e:
-        print(f"❌ Error haciendo llamada a {numero}: {str(e)}")
+    twiml_url = f"{SERVER_URL}/twiml/call"
+    client.calls.create(to=numero, from_=TWILIO_CALLER_ID, url=twiml_url, method='POST')
 
-@app.route('/twiml/call', methods=['GET', 'POST'])
+@app.route('/twiml/call', methods=['POST'])
 def twiml_call():
     response = VoiceResponse()
-    try:
-        numero = ultimo_llamado.get('numero')
-        audio_info = audios_generados.get(numero)
-        if audio_info and os.path.exists(audio_info['audio_path']):
-            audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_info['audio_path'])}"
-            response.play(audio_url)
+    gather = Gather(input='speech', action='/twiml/response', method='POST', timeout=10)
+    numero = ultimo_llamado.get('numero')
+    if numero:
+        respuesta = consulta_ollama("Hola, soy Ana. ¿Cómo puedo ayudarte?")
+        audio_path = generar_audio(respuesta)
+        if audio_path:
+            audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
+            gather.play(audio_url)
         else:
-            response.say("Hola, soy Ana, ¿en qué puedo ayudarte?")
-        response.hangup()
-    except Exception as e:
-        print(f"❌ Error en twiml_call: {str(e)}")
-        response.say("Ocurrió un error en el sistema.")
-        response.hangup()
+            gather.say("Hola, soy Ana. ¿Cómo puedo ayudarte?")
+    response.append(gather)
+    return str(response), 200, {'Content-Type': 'text/xml'}
+
+@app.route('/twiml/response', methods=['POST'])
+def twiml_response():
+    response = VoiceResponse()
+    user_input = request.form.get('SpeechResult')
+    if user_input:
+        respuesta = consulta_ollama(user_input)
+        audio_path = generar_audio(respuesta)
+        gather = Gather(input='speech', action='/twiml/response', method='POST', timeout=10)
+        if audio_path:
+            audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
+            gather.play(audio_url)
+        else:
+            gather.say(respuesta)
+        response.append(gather)
+    else:
+        response.say("No escuché nada. ¿Puedes repetir?")
+        response.redirect('/twiml/call')
     return str(response), 200, {'Content-Type': 'text/xml'}
 
 @app.route('/audio/<filename>', methods=['GET'])
@@ -169,14 +153,9 @@ def serve_audio(filename):
         return send_file(file_path, mimetype='audio/mpeg')
     return jsonify({'error': 'Archivo no encontrado'}), 404
 
-@app.route('/history/<numero>', methods=['GET'])
-def get_history(numero):
-    return jsonify(historial.get(numero, []))
-
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'ok', 'message': 'API funcionando correctamente'})
+    return jsonify({'status': 'ok'})
 
 if __name__ == '__main__':
-    print("🚀 Iniciando API...")
     app.run(host='0.0.0.0', port=4000, debug=True)
