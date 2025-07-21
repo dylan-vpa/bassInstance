@@ -4,6 +4,7 @@ from twilio.twiml.voice_response import VoiceResponse
 import requests
 import pandas as pd
 import os
+import time
 from dotenv import load_dotenv
 
 # Cargar variables de entorno (.env)
@@ -20,7 +21,7 @@ TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
 TWILIO_CALLER_ID = os.getenv('TWILIO_CALLER_ID')
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID')
-SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:4000')  # URL pública de tu servidor
+SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:4000')
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}  # Historial en memoria
@@ -63,11 +64,13 @@ def webhook():
                                 if any(word in mensaje_lower for word in ['sí', 'si', 'okay', 'ok', 'yes']):
                                     hacer_llamada(numero)
                                     respuesta = "¡Gracias! Te estamos llamando ahora."
+                                    enviar_whatsapp(numero, respuesta)
+                                    historial[numero].append({'from': 'bot', 'text': respuesta})
                                 else:
                                     respuesta = consulta_ollama(mensaje)
-                                
-                                enviar_whatsapp(numero, respuesta)
-                                historial[numero].append({'from': 'bot', 'text': respuesta})
+                                    if respuesta:
+                                        enviar_whatsapp(numero, respuesta)
+                                        historial[numero].append({'from': 'bot', 'text': respuesta})
             
             return jsonify({'status': 'ok'}), 200
         except Exception as e:
@@ -94,23 +97,24 @@ def enviar_whatsapp(numero, mensaje):
         print(f"Error en enviar_whatsapp: {str(e)}")
 
 # --------- Consultar Ollama ----------
-def consulta_ollama(prompt):
-    try:
-        payload = {
-            'model': 'ana',
-            'prompt': prompt,
-            'stream': False
-        }
-        resp = requests.post(OLLAMA_URL, json=payload, timeout=30)
-        if resp.ok:
-            data = resp.json()
-            return data.get('response', 'No entendí.')
-        else:
-            print(f"Error consultando Ollama: {resp.text}")
-            return 'Hubo un error al procesar tu mensaje.'
-    except Exception as e:
-        print(f"Error en consulta_ollama: {str(e)}")
-        return 'Hubo un error al procesar tu mensaje.'
+def consulta_ollama(prompt, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            payload = {
+                'model': 'ana',
+                'prompt': prompt,
+                'stream': False
+            }
+            resp = requests.post(OLLAMA_URL, json=payload, timeout=30)
+            if resp.ok:
+                data = resp.json()
+                return data.get('response', '')
+            else:
+                print(f"Error consultando Ollama (intento {attempt +1}): {resp.text}")
+        except Exception as e:
+            print(f"Error en consulta_ollama (intento {attempt +1}): {str(e)}")
+        time.sleep(1)
+    return ''
 
 # --------- Subir Excel con números ----------
 @app.route('/sendNumbers', methods=['POST'])
@@ -125,7 +129,7 @@ def send_numbers():
         
         df = pd.read_excel(file)
         if 'nombre' not in df.columns or 'número' not in df.columns:
-            return jsonify({'error': 'El Excel debe tener columnas "nombre" y "número"'}), 400
+            return jsonify({'error': 'El Excel debe tener columnas \"nombre\" y \"número\"'}), 400
         
         enviados = 0
         for _, row in df.iterrows():
