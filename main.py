@@ -41,6 +41,7 @@ def generar_audio(texto):
             audio_path = os.path.join('static', audio_filename)
             with open(audio_path, 'wb') as f:
                 f.write(resp.content)
+            print(f"✅ Audio generado: {audio_path}")
             return audio_path
         else:
             print(f"❌ ElevenLabs error: {resp.text}")
@@ -53,7 +54,8 @@ def consulta_ollama(prompt):
     try:
         resp = requests.post(OLLAMA_URL, json={'model': 'ana', 'prompt': prompt, 'stream': False}, timeout=30)
         if resp.ok:
-            return resp.json().get('response', '')
+            respuesta = resp.json().get('response', '')
+            return respuesta
         else:
             print(f"❌ Ollama error: {resp.text}")
             return 'No entendí bien, ¿puedes repetir?'
@@ -84,6 +86,7 @@ def send_numbers():
             numero = str(row[col_map['numero']]).strip()
             if numero.lower() != 'nan':
                 mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
+                print(f"[WHATSAPP-BOT] {numero}: {mensaje}")
                 enviar_whatsapp(numero, mensaje)
                 enviados += 1
         return jsonify({'status': f'{enviados} mensajes enviados'}), 200
@@ -100,8 +103,11 @@ def webhook():
             for message in messages:
                 numero = message['from']
                 if message['type'] == 'text':
+                    texto_usuario = message['text']['body']
+                    print(f"[WHATSAPP-USUARIO] {numero}: {texto_usuario}")
                     ultimo_llamado['numero'] = numero
                     respuesta = consulta_ollama("El usuario dijo sí. Inicia conversación.")
+                    print(f"[WHATSAPP-BOT] {numero}: {respuesta}")
                     audio_path = generar_audio(respuesta)
                     if audio_path:
                         hacer_llamada(numero)
@@ -117,13 +123,14 @@ def twiml_call():
     gather = Gather(input='speech', action='/twiml/response', method='POST', timeout=10)
     numero = ultimo_llamado.get('numero')
     if numero:
-        respuesta = consulta_ollama("Hola, soy Ana. ¿Cómo puedo ayudarte?")
-        audio_path = generar_audio(respuesta)
+        saludo = "Hola, soy Ana. ¿Cómo puedo ayudarte?"
+        print(f"[LLAMADA-BOT] {saludo}")
+        audio_path = generar_audio(saludo)
         if audio_path:
             audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
             gather.play(audio_url)
         else:
-            gather.say("Hola, soy Ana. ¿Cómo puedo ayudarte?")
+            gather.say(saludo)
     response.append(gather)
     return str(response), 200, {'Content-Type': 'text/xml'}
 
@@ -132,7 +139,9 @@ def twiml_response():
     response = VoiceResponse()
     user_input = request.form.get('SpeechResult')
     if user_input:
+        print(f"[LLAMADA-USUARIO] {user_input}")
         respuesta = consulta_ollama(user_input)
+        print(f"[LLAMADA-BOT] {respuesta}")
         audio_path = generar_audio(respuesta)
         gather = Gather(input='speech', action='/twiml/response', method='POST', timeout=10)
         if audio_path:
@@ -158,4 +167,5 @@ def health_check():
     return jsonify({'status': 'ok'})
 
 if __name__ == '__main__':
+    print("🚀 Iniciando API...")
     app.run(host='0.0.0.0', port=4000, debug=True)
