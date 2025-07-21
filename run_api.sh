@@ -1,18 +1,43 @@
 #!/bin/bash
 set -e  # Si falla algo, se detiene
 
-echo "Instalando dependencias..."
+echo "🔧 Instalando dependencias..."
 pip3 install -r requirements.txt
 
-echo "Verificando archivo .env..."
+echo "📁 Verificando archivo .env..."
 if [ ! -f .env ]; then
-    echo "⚠️  Archivo .env no encontrado. Por favor, crea uno antes de continuar."
+    echo "⚠️  Archivo .env no encontrado."
+    echo "📋 Copiando .env.example a .env..."
+    if [ -f .env.example ]; then
+        cp .env.example .env
+        echo "✏️  Por favor, edita el archivo .env con tus credenciales antes de continuar."
+        exit 1
+    else
+        echo "❌ Tampoco se encontró .env.example. Créalo manualmente."
+        exit 1
+    fi
+fi
+
+echo "🔍 Verificando variables críticas..."
+source .env
+if [[ -z "$WHATSAPP_TOKEN" || -z "$TWILIO_ACCOUNT_SID" || -z "$ELEVENLABS_API_KEY" ]]; then
+    echo "⚠️  Faltan variables críticas en .env. Verifica:"
+    echo "   - WHATSAPP_TOKEN"
+    echo "   - TWILIO_ACCOUNT_SID" 
+    echo "   - ELEVENLABS_API_KEY"
     exit 1
 fi
 
-echo "Exportando variables de entorno..."
-export FLASK_APP=main.py
-export FLASK_ENV=production
+echo "📁 Creando directorio static..."
+mkdir -p static
 
-echo "Levantando API en puerto 4000..."
-flask run --host=0.0.0.0 --port=4000
+echo "🌐 Exportando variables de entorno..."
+export FLASK_APP=main.py
+export FLASK_ENV=development
+
+echo "🚀 Levantando API en puerto 4000..."
+echo "🔗 Webhook: http://localhost:4000/webhook"
+echo "📋 Health check: http://localhost:4000/health"
+echo "📊 Para probar: curl http://localhost:4000/health"
+
+python3 main.py
