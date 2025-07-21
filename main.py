@@ -4,7 +4,6 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 import requests
 import pandas as pd
 import os
-import time
 import unicodedata
 from dotenv import load_dotenv
 
@@ -34,8 +33,10 @@ def generar_audio(texto):
     try:
         headers = {'xi-api-key': ELEVENLABS_API_KEY}
         payload = {'text': texto, 'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75}}
-        resp = requests.post(f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
-                             headers=headers, json=payload, timeout=30)
+        resp = requests.post(
+            f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
+            headers=headers, json=payload, timeout=30
+        )
         if resp.ok:
             audio_filename = f'audio_{os.urandom(4).hex()}.mp3'
             audio_path = os.path.join('static', audio_filename)
@@ -68,6 +69,8 @@ def enviar_whatsapp(numero, mensaje):
         payload = {'messaging_product': 'whatsapp', 'to': numero, 'type': 'text', 'text': {'body': mensaje}}
         headers = {'Authorization': f'Bearer {WHATSAPP_TOKEN}', 'Content-Type': 'application/json'}
         resp = requests.post(WHATSAPP_URL, json=payload, headers=headers)
+        if not resp.ok:
+            print(f"❌ Error enviando WhatsApp a {numero}: {resp.text}")
     except Exception as e:
         print(f"❌ WhatsApp error: {str(e)}")
 
@@ -120,17 +123,23 @@ def hacer_llamada(numero):
 @app.route('/twiml/call', methods=['POST'])
 def twiml_call():
     response = VoiceResponse()
-    gather = Gather(input='speech', action='/twiml/response', method='POST', timeout=10)
+    gather = Gather(
+        input='speech',
+        action='/twiml/response',
+        method='POST',
+        timeout=5,
+        speechTimeout='auto',
+        language='es-CO'  # Español Colombia para mejor reconocimiento
+    )
     numero = ultimo_llamado.get('numero')
-    if numero:
-        saludo = "Hola, soy Ana. ¿Cómo puedo ayudarte?"
-        print(f"[LLAMADA-BOT] {saludo}")
-        audio_path = generar_audio(saludo)
-        if audio_path:
-            audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
-            gather.play(audio_url)
-        else:
-            gather.say(saludo)
+    saludo = "Hola, soy Ana. ¿Cómo puedo ayudarte?"
+    print(f"[LLAMADA-BOT] {saludo}")
+    audio_path = generar_audio(saludo)
+    if audio_path:
+        audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
+        gather.play(audio_url)
+    else:
+        gather.say(saludo, language='es-CO')
     response.append(gather)
     return str(response), 200, {'Content-Type': 'text/xml'}
 
@@ -138,20 +147,29 @@ def twiml_call():
 def twiml_response():
     response = VoiceResponse()
     user_input = request.form.get('SpeechResult')
-    if user_input:
-        print(f"[LLAMADA-USUARIO] {user_input}")
+    print(f"[LLAMADA-USUARIO RAW] {user_input}")
+
+    if user_input and user_input.strip() != '':
         respuesta = consulta_ollama(user_input)
         print(f"[LLAMADA-BOT] {respuesta}")
         audio_path = generar_audio(respuesta)
-        gather = Gather(input='speech', action='/twiml/response', method='POST', timeout=10)
+        gather = Gather(
+            input='speech',
+            action='/twiml/response',
+            method='POST',
+            timeout=5,
+            speechTimeout='auto',
+            language='es-CO'
+        )
         if audio_path:
             audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
             gather.play(audio_url)
         else:
-            gather.say(respuesta)
+            gather.say(respuesta, language='es-CO')
         response.append(gather)
     else:
-        response.say("No escuché nada. ¿Puedes repetir?")
+        print("[LLAMADA] No se reconoció audio, repitiendo pregunta")
+        response.say("No escuché nada. ¿Puedes repetir, por favor?", language='es-CO')
         response.redirect('/twiml/call')
     return str(response), 200, {'Content-Type': 'text/xml'}
 
