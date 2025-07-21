@@ -25,18 +25,19 @@ SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:4000')
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}
-ultimo_audio_generado = {'numero': None, 'audio_path': None, 'audio_url': None, 'mensaje': None}
+audios_generados = {}
+
 os.makedirs('static', exist_ok=True)
 
 def normalize(s):
     return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn').lower().strip()
 
-def generar_audio_respuesta(texto_usuario):
+def generar_audio_respuesta(numero, texto_usuario):
     respuesta_ia = consulta_ollama(f"El usuario dijo: {texto_usuario}. Responde breve y amigable.")
     audio_path = generar_audio_elevenlabs(respuesta_ia)
     if audio_path:
         audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
-        ultimo_audio_generado.update({'audio_path': audio_path, 'audio_url': audio_url, 'mensaje': respuesta_ia})
+        audios_generados[numero] = {'audio_path': audio_path, 'audio_url': audio_url, 'mensaje': respuesta_ia}
         return True
     return False
 
@@ -57,11 +58,10 @@ def webhook():
                         llamada_ya_hecha = any(m.get('from') == 'call' for m in historial[numero])
                         ultimo_mensaje_bot = next((m['text'].lower() for m in reversed(historial[numero]) if m['from'] == 'bot'), '')
                         if 'permiso para llamarte' in ultimo_mensaje_bot and not llamada_ya_hecha:
-                            if generar_audio_respuesta(mensaje):
+                            if generar_audio_respuesta(numero, mensaje):
                                 hacer_llamada(numero)
                                 enviar_whatsapp(numero, "¡Gracias! Te estamos llamando ahora.")
-                                historial[numero].append({'from': 'call', 'audio_file': ultimo_audio_generado['audio_path'], 'message': ultimo_audio_generado['mensaje']})
-                                ultimo_audio_generado['numero'] = numero  # Guardar número activo
+                                historial[numero].append({'from': 'call', 'audio_file': audios_generados[numero]['audio_path'], 'message': audios_generados[numero]['mensaje']})
                             else:
                                 enviar_whatsapp(numero, "No pudimos generar la llamada, intenta más tarde.")
                         else:
@@ -99,9 +99,9 @@ def consulta_ollama(prompt, max_retries=3):
 @app.route('/sendNumbers', methods=['POST'])
 def send_numbers():
     try:
-        file = request.files.get('file')
-        if not file or file.filename == '':
+        if 'file' not in request.files:
             return jsonify({'error': 'No se proporcionó archivo válido'}), 400
+        file = request.files['file']
         df = pd.read_excel(file)
         normalized_cols = [normalize(c) for c in df.columns]
         col_map = {normalize(c): c for c in df.columns}
@@ -125,49 +125,35 @@ def send_numbers():
 
 def hacer_llamada(numero):
     try:
-        twiml_url = f"{SERVER_URL}/twiml/call"  # ÚNICO ENDPOINT
+        twiml_url = f"{SERVER_URL}/twiml/call?numero={numero}"
         call = client.calls.create(to=numero, from_=TWILIO_CALLER_ID, url=twiml_url, method='GET')
         print(f"✅ Llamada iniciada a {numero}, SID: {call.sid}")
     except Exception as e:
         print(f"❌ Error haciendo llamada a {numero}: {str(e)}")
 
-@app.route('/twiml/call', methods=['GET'])
+@app.route('/twiml/call', methods=['GET', 'POST'])
 def twiml_call():
+    numero = request.args.get('numero')
+    if not numero:
+        numero = request.values.get('From', '').replace('whatsapp:', '').strip()
+    if not numero.startswith('+') and numero.isdigit():
+        numero = '+' + numero
+
     response = VoiceResponse()
+    audio_info = audios_generados.get(numero)
     try:
-        numero = ultimo_audio_generado.get('numero')
-        audio_path = ultimo_audio_generado.get('audio_path')
-        audio_url = ultimo_audio_generado.get('audio_url')
-        if numero and audio_path and os.path.exists(audio_path):
-            print(f"🎵 Twilio reproducirá audio para {numero}: {audio_url}")
-            response.play(audio_url)
+        if audio_info and os.path.exists(audio_info['audio_path']):
+            print(f"🎵 Twilio reproducirá audio para {numero}: {audio_info['audio_url']}")
+            response.play(audio_info['audio_url'])
         else:
-            print(f"⚠️ No se encontró audio preparado, usando fallback.")
-            response.say("Lo siento, no tengo un mensaje para ti ahora.")
+            print(f"⚠️ No se encontró audio para {numero}, usando fallback.")
+            response.say("Lo siento, no tengo un mensaje para ti ahora.", language='es-ES')
         response.hangup()
     except Exception as e:
         print(f"❌ Error en twiml_call: {str(e)}")
-        response.say("Ocurrió un error en el sistema.")
+        response.say("Ocurrió un error en el sistema.", language='es-ES')
         response.hangup()
     return str(response), 200, {'Content-Type': 'text/xml'}
-
-def generar_audio_elevenlabs(texto):
-    try:
-        headers = {'xi-api-key': ELEVENLABS_API_KEY}
-        payload = {'text': texto, 'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75}}
-        resp = requests.post(f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}', headers=headers, json=payload, timeout=30)
-        if resp.ok:
-            audio_filename = f'audio_{os.urandom(4).hex()}.mp3'
-            audio_path = os.path.join('static', audio_filename)
-            with open(audio_path, 'wb') as f:
-                f.write(resp.content)
-            print(f"✅ Audio generado: {audio_path}")
-            return audio_path
-        print(f"❌ ElevenLabs error: {resp.text}")
-        return None
-    except Exception as e:
-        print(f"❌ Error generando audio: {str(e)}")
-        return None
 
 @app.route('/audio/<filename>', methods=['GET'])
 def serve_audio(filename):
