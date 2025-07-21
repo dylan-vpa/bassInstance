@@ -61,12 +61,25 @@ def webhook():
                                 historial.setdefault(numero, []).append({'from': 'user', 'text': mensaje})
                                 
                                 mensaje_lower = mensaje.lower()
-                                if any(word in mensaje_lower for word in ['sí', 'si', 'okay', 'ok', 'yes']):
-                                    hacer_llamada(numero)
-                                    respuesta = "¡Gracias! Te estamos llamando ahora."
-                                    enviar_whatsapp(numero, respuesta)
-                                    historial[numero].append({'from': 'bot', 'text': respuesta})
+                                
+                                # Revisar si previamente se pidió permiso para llamar
+                                ultimo_mensaje_bot = next(
+                                    (m['text'].lower() for m in reversed(historial[numero]) if m['from'] == 'bot'),
+                                    ''
+                                )
+                                
+                                if '¿nos das permiso para llamarte?' in ultimo_mensaje_bot:
+                                    if any(word in mensaje_lower for word in ['sí', 'si', 'okay', 'ok', 'yes']):
+                                        hacer_llamada(numero)
+                                        respuesta = "¡Gracias! Te estamos llamando ahora."
+                                        enviar_whatsapp(numero, respuesta)
+                                        historial[numero].append({'from': 'bot', 'text': respuesta})
+                                    else:
+                                        respuesta = "Gracias por tu respuesta. Si cambias de opinión, avísanos."
+                                        enviar_whatsapp(numero, respuesta)
+                                        historial[numero].append({'from': 'bot', 'text': respuesta})
                                 else:
+                                    # Procesar como mensaje normal
                                     respuesta = consulta_ollama(mensaje)
                                     if respuesta:
                                         enviar_whatsapp(numero, respuesta)
