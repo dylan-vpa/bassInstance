@@ -95,7 +95,9 @@ def webhook():
                     seguimiento.setdefault(numero, {'responde': False}).update({'responde': True})
                     print(f"[WhatsApp-Usuario] {numero}: {texto_usuario}")
 
-                    respuesta = consulta_ollama(texto_usuario)
+                    # NUEVO: mandar historial completo como contexto
+                    conversacion = '\n'.join(historial[numero])
+                    respuesta = consulta_ollama(conversacion)
                     enviar_whatsapp(numero, respuesta)
                     historial[numero].append(f"IA: {respuesta}")
                     print(f"[WhatsApp-BOT Chat] {numero}: {respuesta}")
@@ -122,9 +124,17 @@ def twiml_call():
 def twiml_response():
     response = VoiceResponse()
     user_input = request.form.get('SpeechResult')
-    if user_input and user_input.strip():
+    numero = ultimo_llamado.get('numero')
+
+    if user_input and user_input.strip() and numero:
         print(f"[Llamada-Usuario] Dijo: {user_input}")
-        respuesta = consulta_ollama(user_input)
+        historial.setdefault(numero, []).append(f"Usuario: {user_input}")
+
+        # NUEVO: mandar historial completo como contexto
+        conversacion = '\n'.join(historial[numero])
+        respuesta = consulta_ollama(conversacion)
+        historial[numero].append(f"IA: {respuesta}")
+
         audio_path = generar_audio(respuesta)
         gather = Gather(input='speech', action='/twiml/response', method='POST', timeout=5, speechTimeout='auto', language='es-CO')
         if audio_path:
@@ -171,6 +181,7 @@ def enviar_mensajes_programados():
                     hacer_llamada(numero)
                     info['llamadas_realizadas'] += 1
                     info['ultima_llamada'] = now
+                    ultimo_llamado['numero'] = numero
                     print(f"[Llamada-Iniciada] Llamando a {numero}")
 
             else:
