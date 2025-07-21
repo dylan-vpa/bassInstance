@@ -5,12 +5,12 @@ import pandas as pd
 import os
 from dotenv import load_dotenv
 
-# Cargar variables de entorno
+# Cargar variables de entorno (.env)
 load_dotenv()
 
 app = Flask(__name__)
 
-# Configuración desde .env
+# Configuración
 WHATSAPP_TOKEN = os.getenv('WHATSAPP_TOKEN')
 WHATSAPP_URL = os.getenv('WHATSAPP_URL')
 OLLAMA_URL = os.getenv('OLLAMA_URL')
@@ -21,9 +21,9 @@ ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID')
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-historial = {}  # Guardar mensajes (en memoria; para producción usar DB)
+historial = {}  # Historial en memoria
 
-# ---------- Recibir mensajes ----------
+# --------- Recibir mensajes de WhatsApp ----------
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
@@ -37,7 +37,7 @@ def webhook():
 
     return jsonify({'status': 'ok'}), 200
 
-# ---------- Enviar mensaje por WhatsApp ----------
+# --------- Enviar mensaje por WhatsApp ----------
 def enviar_whatsapp(numero, mensaje):
     payload = {
         'messaging_product': 'whatsapp',
@@ -50,7 +50,7 @@ def enviar_whatsapp(numero, mensaje):
     if not resp.ok:
         print(f"Error enviando mensaje a {numero}: {resp.text}")
 
-# ---------- Consultar Ollama ----------
+# --------- Consultar Ollama ----------
 def consulta_ollama(prompt):
     resp = requests.post(OLLAMA_URL, json={'model': 'ana', 'prompt': prompt})
     if resp.ok:
@@ -59,7 +59,7 @@ def consulta_ollama(prompt):
         print(f"Error consultando Ollama: {resp.text}")
         return 'Hubo un error al procesar tu mensaje.'
 
-# ---------- Subir Excel y pedir permiso ----------
+# --------- Subir Excel con números ----------
 @app.route('/sendNumbers', methods=['POST'])
 def send_numbers():
     file = request.files['file']
@@ -71,24 +71,28 @@ def send_numbers():
         enviar_whatsapp(numero, mensaje)
     return jsonify({'status': 'mensajes enviados'}), 200
 
-# ---------- Procesar respuesta de permiso ----------
+# --------- Procesar respuesta de permiso ----------
 @app.route('/permission_response', methods=['POST'])
 def permission_response():
     data = request.json
     numero = data['from']
     mensaje = data['text']['body'].lower()
+
     if mensaje in ['sí', 'si', 'okay', 'ok']:
         hacer_llamada(numero)
+        enviar_whatsapp(numero, "¡Gracias! Te estamos llamando ahora.")
+    else:
+        prompt = f"El usuario dijo: '{mensaje}'. Ayúdame a convencerlo para que nos permita llamarlo, usando un tono amable y persuasivo."
+        respuesta_persuasion = consulta_ollama(prompt)
+        enviar_whatsapp(numero, respuesta_persuasion)
+
     return jsonify({'status': 'respuesta procesada'}), 200
 
-# ---------- Hacer llamada usando Twilio y ElevenLabs ----------
+# --------- Hacer llamada con Twilio y ElevenLabs ----------
 def hacer_llamada(numero):
-    # Consultar IA para generar texto de llamada
     texto_ia = consulta_ollama("El usuario ha aceptado la llamada. ¿Qué mensaje le doy?")
-    audio_url = generar_audio_elevenlabs(texto_ia)
-
-    # Aquí deberías tener un endpoint que sirva el audio (usamos /audio/<filename>)
-    filename = os.path.basename(audio_url)
+    audio_path = generar_audio_elevenlabs(texto_ia)
+    filename = os.path.basename(audio_path)
     twiml_url = f"https://tu-servidor.com/audio/{filename}"
 
     call = client.calls.create(
@@ -98,7 +102,7 @@ def hacer_llamada(numero):
     )
     historial.setdefault(numero, []).append({'from': 'call', 'sid': call.sid})
 
-# ---------- Generar audio con ElevenLabs ----------
+# --------- Generar audio con ElevenLabs ----------
 def generar_audio_elevenlabs(texto):
     headers = {
         'xi-api-key': ELEVENLABS_API_KEY,
@@ -116,12 +120,12 @@ def generar_audio_elevenlabs(texto):
         f.write(response.content)
     return audio_path
 
-# ---------- Endpoint para servir audio ----------
+# --------- Servir archivo de audio ----------
 @app.route('/audio/<filename>', methods=['GET'])
 def serve_audio(filename):
     return send_file(os.path.join('static', filename), mimetype='audio/mpeg')
 
-# ---------- Consultar historial ----------
+# --------- Obtener historial ----------
 @app.route('/history/<numero>', methods=['GET'])
 def get_history(numero):
     return jsonify(historial.get(numero, []))
