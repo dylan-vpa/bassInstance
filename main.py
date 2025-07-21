@@ -1,10 +1,7 @@
 from flask import Flask, request, jsonify, send_file
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Gather
-import requests
-import pandas as pd
-import os
-import unicodedata
+import requests, pandas as pd, os, unicodedata
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,7 +20,6 @@ SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:4000')
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 historial = {}
 ultimo_llamado = {'numero': None}
-
 os.makedirs('static', exist_ok=True)
 
 def normalize(s):
@@ -32,10 +28,7 @@ def normalize(s):
 def generar_audio(texto):
     headers = {'xi-api-key': ELEVENLABS_API_KEY}
     payload = {'text': texto, 'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75}}
-    resp = requests.post(
-        f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
-        headers=headers, json=payload, timeout=30
-    )
+    resp = requests.post(f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}', headers=headers, json=payload, timeout=30)
     if resp.ok:
         audio_filename = f'audio_{os.urandom(4).hex()}.mp3'
         audio_path = os.path.join('static', audio_filename)
@@ -71,6 +64,7 @@ def send_numbers():
             mensaje = f"Hola {nombre}, ¿nos das permiso para llamarte?"
             enviar_whatsapp(numero, mensaje)
             historial[numero] = [f"IA: {mensaje}"]
+            print(f"[WhatsApp-BOT] {numero}: {mensaje}")
             enviados += 1
     return jsonify({'status': f'{enviados} mensajes enviados'}), 200
 
@@ -87,6 +81,7 @@ def webhook():
                     historial.setdefault(numero, [])
                     ultima_respuesta_bot = historial[numero][-1] if historial[numero] else ""
                     historial[numero].append(f"Usuario: {texto_usuario}")
+                    print(f"[WhatsApp-Usuario] {numero}: {texto_usuario}")
 
                     if "permiso para llamarte" in ultima_respuesta_bot.lower():
                         if texto_usuario.lower() in ['sí', 'si', 'claro', 'dale', 'vale', 'ok', 'ai']:
@@ -94,12 +89,15 @@ def webhook():
                             enviar_whatsapp(numero, respuesta)
                             ultimo_llamado['numero'] = numero
                             hacer_llamada(numero)
+                            print(f"[WhatsApp-BOT] {numero}: {respuesta}")
                         else:
                             respuesta = consulta_ollama(texto_usuario)
                             enviar_whatsapp(numero, respuesta)
+                            print(f"[WhatsApp-BOT Chat] {numero}: {respuesta}")
                     else:
                         respuesta = consulta_ollama(texto_usuario)
                         enviar_whatsapp(numero, respuesta)
+                        print(f"[WhatsApp-BOT Chat] {numero}: {respuesta}")
 
                     historial[numero].append(f"IA: {respuesta}")
 
@@ -108,6 +106,7 @@ def webhook():
 def hacer_llamada(numero):
     twiml_url = f"{SERVER_URL}/twiml/call"
     client.calls.create(to=numero, from_=TWILIO_CALLER_ID, url=twiml_url, method='POST')
+    print(f"[Llamada-Iniciada] Llamando a {numero}")
 
 @app.route('/twiml/call', methods=['POST'])
 def twiml_call():
@@ -117,23 +116,24 @@ def twiml_call():
     audio_path = generar_audio(saludo)
     gather.play(f"{SERVER_URL}/audio/{os.path.basename(audio_path)}") if audio_path else gather.say(saludo, language='es-CO')
     response.append(gather)
+    print(f"[Llamada-BOT] Ana: {saludo}")
     return str(response), 200, {'Content-Type': 'text/xml'}
 
-# Endpoint corregido aquí abajo claramente indicado
 @app.route('/twiml/response', methods=['POST'])
 def twiml_response():
     response = VoiceResponse()
     user_input = request.form.get('SpeechResult')
     if user_input and user_input.strip():
+        print(f"[Llamada-Usuario] Dijo: {user_input}")
         respuesta = consulta_ollama(user_input)
         audio_path = generar_audio(respuesta)
         gather = Gather(input='speech', action='/twiml/response', method='POST', timeout=5, speechTimeout='auto', language='es-CO')
         if audio_path:
-            audio_url = f"{SERVER_URL}/audio/{os.path.basename(audio_path)}"
-            gather.play(audio_url)
+            gather.play(f"{SERVER_URL}/audio/{os.path.basename(audio_path)}")
         else:
             gather.say(respuesta, language='es-CO')
         response.append(gather)
+        print(f"[Llamada-BOT] Ana: {respuesta}")
     else:
         response.say("No escuché nada. ¿Puedes repetir por favor?", language='es-CO')
         response.redirect('/twiml/call')
